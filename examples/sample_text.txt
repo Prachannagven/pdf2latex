@@ -1,0 +1,21 @@
+This is a sample document for testing the PDF to LaTeX converter.
+
+INTRODUCTION
+
+This document contains various types of content to test the conversion capabilities.
+
+Basic Text Processing
+
+The converter should be able to handle regular paragraphs like this one. It should preserve the basic text formatting and structure while converting it to proper LaTeX format.
+
+1. First Item
+2. Second Item  
+3. Third Item
+
+Mathematical Content
+
+Some basic mathematical expressions: E = mc^2 and the Pythagorean theorem a^2 + b^2 = c^2.
+
+CONCLUSION
+
+This concludes our test document. The converter should be able to extract this content and generate appropriate LaTeX code.
