@@ -34,7 +34,8 @@ class PDF2LaTeXConverter:
         self.latex_generator = LaTeXGenerator(
             template=template,
             preserve_images=preserve_images,
-            config=self.config
+            config=self.config,
+            output_dir=None  # Will be set when we know the output path
         )
         
         logger.info(f"Initialized PDF2LaTeXConverter with template: {template}")
@@ -91,6 +92,12 @@ class PDF2LaTeXConverter:
         """
         logger.info(f"Converting {pdf_path} to {output_path}")
         
+        # Update image processor output directory if needed
+        if self.preserve_images and self.latex_generator.image_processor:
+            image_dir = output_path.parent / f"{output_path.stem}_images"
+            self.latex_generator.image_processor.output_dir = image_dir
+            image_dir.mkdir(exist_ok=True)
+        
         # Parse PDF
         document = self.parse_pdf(pdf_path)
         
@@ -101,6 +108,12 @@ class PDF2LaTeXConverter:
         output_path.write_text(latex_content, encoding='utf-8')
         
         logger.info(f"Conversion completed: {output_path}")
+        
+        # Log image extraction results
+        if self.preserve_images and self.latex_generator.image_processor:
+            image_count = len(list(self.latex_generator.image_processor.output_dir.glob("*")))
+            if image_count > 0:
+                logger.info(f"Extracted {image_count} images to: {self.latex_generator.image_processor.output_dir}")
     
     def get_supported_features(self) -> Dict[str, bool]:
         """

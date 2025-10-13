@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from loguru import logger
 import io
+from .metadata_extractor import MetadataExtractor
 
 
 class PDFParser:
@@ -25,6 +26,7 @@ class PDFParser:
         """
         self.config = config or {}
         self.preferred_library = self.config.get('preferred_library', 'pymupdf')
+        self.metadata_extractor = MetadataExtractor()
         
         logger.info(f"Initialized PDFParser with preferred library: {self.preferred_library}")
     
@@ -60,6 +62,16 @@ class PDFParser:
                 if result and result.get('pages'):
                     logger.info(f"Successfully parsed with {library_name}")
                     result['parser_used'] = library_name
+                    result['pdf_path'] = str(pdf_path)  # Add PDF path for image extraction
+                    
+                    # Enhance metadata with content analysis
+                    try:
+                        enhanced_metadata = self.metadata_extractor.extract_enhanced_metadata(result)
+                        result['metadata'] = enhanced_metadata
+                        logger.info("Enhanced metadata extraction completed")
+                    except Exception as e:
+                        logger.warning(f"Failed to enhance metadata: {e}")
+                    
                     return result
             except Exception as e:
                 logger.warning(f"Failed to parse with {library_name}: {e}")
