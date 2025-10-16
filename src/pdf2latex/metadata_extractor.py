@@ -18,12 +18,12 @@ class MetadataExtractor:
         """Initialize the metadata extractor."""
         # Patterns for detecting titles in document content
         self.title_patterns = [
-            # Large text at beginning of document
-            r'^(.{1,100}?)(?:\n|$)',
-            # Common title formatting patterns
+            # Common title formatting patterns (newline terminated)
             r'^([A-Z][^.\n]{10,80})(?:\n|$)',
             # Centered text patterns
             r'^\s*([A-Z][A-Za-z\s\-:]{10,80})\s*$',
+            # Title-like text at start (more restrictive - stops at common separators)
+            r'^([A-Z][A-Za-z\s\-:]{5,50})(?=\s+[A-Z][a-z]+\s+[A-Z][a-z]+|\s+\d{1,2}[/-]\d|\s+(?:January|February|March|April|May|June|July|August|September|October|November|December))',
             # Bold or emphasized text (detected by font analysis)
             r'([A-Z][A-Za-z\s\-:]{10,80})',
         ]
@@ -101,12 +101,14 @@ class MetadataExtractor:
                 metadata['author'] = detected_author
                 logger.info(f"Detected author: {detected_author}")
         
-        # Extract date if not present
-        if not metadata.get('creation_date') and not metadata.get('date'):
-            detected_date = self._detect_date(first_page_text, full_text)
-            if detected_date:
-                metadata['date'] = detected_date
-                logger.info(f"Detected date: {detected_date}")
+        # Extract date from content (prioritize content over metadata)
+        detected_date = self._detect_date(first_page_text, full_text)
+        if detected_date:
+            metadata['date'] = detected_date
+            logger.info(f"Detected date: {detected_date}")
+        elif not metadata.get('creation_date') and not metadata.get('date'):
+            # Only fallback to empty if no content date and no metadata date
+            pass
         
         # Extract document structure information
         structure_info = self._analyze_document_structure(full_text)

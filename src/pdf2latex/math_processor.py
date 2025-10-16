@@ -28,12 +28,14 @@ class MathProcessor:
                     r'([a-zA-Z0-9\)])²',  # x², E²
                     r'([a-zA-Z0-9\)])³',  # x³, E³
                     r'([a-zA-Z0-9\)])([⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+)',  # Unicode superscripts
+                    r'\)([0-9])\b',  # Trailing digits after parentheses: (VGS-Vth)2 → (VGS-Vth)^2
                 ],
                 'replacements': [
                     r'\1^{\2}',
                     r'\1^{2}',
                     r'\1^{3}',
-                    lambda m: f'{m.group(1)}^{{{self._convert_unicode_superscript(m.group(2))}}}'
+                    lambda m: f'{m.group(1)}^{{{self._convert_unicode_superscript(m.group(2))}}}',
+                    r')^{\1}'
                 ]
             },
             
@@ -41,10 +43,20 @@ class MathProcessor:
                 'patterns': [
                     r'([a-zA-Z])_([a-zA-Z0-9\-\+]+)',  # x_i, H_2O
                     r'([a-zA-Z])([₀₁₂₃₄₅₆₇₈₉₊₋]+)',  # Unicode subscripts
+                    r'\b([A-Z])([A-Z]{2,})\b',  # Common variables: VGS → V_{GS}, VTH → V_{TH}
+                    r'\b([A-Z])([a-z]+)\b',  # Variables like Vth → V_{th}
+                    r'\b([A-Z])([a-z]*[A-Z][a-z]*)\b',  # Variables like Cox → C_{ox}
+                    r'\b(ID)\b',  # Specific case: ID → I_D
+                    r'µ([a-z])([A-Z][a-z]*)',  # Pattern like µnCox → \mu_n C_{ox}
                 ],
                 'replacements': [
                     r'\1_{\2}',
-                    lambda m: f'{m.group(1)}_{{{self._convert_unicode_subscript(m.group(2))}}}'
+                    lambda m: f'{m.group(1)}_{{{self._convert_unicode_subscript(m.group(2))}}}',
+                    r'\1_{\2}',
+                    r'\1_{\2}',  
+                    r'\1_{\2}',
+                    r'I_D',
+                    r'\\mu_{\1} C_{\2}'
                 ]
             },
             
@@ -53,8 +65,10 @@ class MathProcessor:
                 'patterns': [
                     r'(\d+)/(\d+)',  # Simple fractions: 1/2, 3/4
                     r'\(([^)]+)\)/\(([^)]+)\)',  # Parenthesized fractions: (x+1)/(x-1)
+                    r'\b([A-Z])/([A-Z])\b',  # Variable fractions: W/L → \frac{W}{L}
                 ],
                 'replacements': [
+                    r'\\frac{\1}{\2}',
                     r'\\frac{\1}{\2}',
                     r'\\frac{\1}{\2}'
                 ]
@@ -128,6 +142,16 @@ class MathProcessor:
                     r'\\ln(\1)',
                     r'\\exp(\1)'
                 ]
+            },
+            
+            # Specific equation patterns  
+            'equation_reconstruction': {
+                'patterns': [
+                    r'([A-Z]+)\s*=\s*1\s*2([µμ][a-z]+[A-Z][a-z]*)\s*([A-Z])\s*([A-Z])\s*\(([A-Z]+)\s*[\-]\s*([A-Z][a-z]+)\)([0-9])',  # ID = 1 2µnCox W L (VGS -Vth)2
+                ],
+                'replacements': [
+                    lambda m: f'{m.group(1).replace("ID", "I_D")} = \\frac{{1}}{{2}}\\mu_n C_{{ox}} \\frac{{{m.group(3)}}}{{{m.group(4)}}}({m.group(5).replace("VGS", "V_{GS}")} - {m.group(6).replace("Vth", "V_{th}")})'+'\\^{' + m.group(7) + '}'
+                ]
             }
         }
     
@@ -136,7 +160,7 @@ class MathProcessor:
         return {
             'α': r'\\alpha', 'β': r'\\beta', 'γ': r'\\gamma', 'δ': r'\\delta',
             'ε': r'\\epsilon', 'ζ': r'\\zeta', 'η': r'\\eta', 'θ': r'\\theta',
-            'ι': r'\\iota', 'κ': r'\\kappa', 'λ': r'\\lambda', 'μ': r'\\mu',
+            'ι': r'\\iota', 'κ': r'\\kappa', 'λ': r'\\lambda', 'μ': r'\\mu', 'µ': r'\\mu',
             'ν': r'\\nu', 'ξ': r'\\xi', 'ο': r'\\omicron', 'π': r'\\pi',
             'ρ': r'\\rho', 'σ': r'\\sigma', 'τ': r'\\tau', 'υ': r'\\upsilon',
             'φ': r'\\phi', 'χ': r'\\chi', 'ψ': r'\\psi', 'ω': r'\\omega',
@@ -278,10 +302,12 @@ class MathProcessor:
         strong_math_indicators = [
             r'[∑∏∫∂∇∆]',        # Strong mathematical symbols
             r'√\([^)]+\)',       # Square root with parentheses
-            r'sin|cos|tan|log|ln|exp\s*\(',  # Mathematical functions with parentheses
+            r'\b(sin|cos|tan|log|ln|exp)\s*\(',  # Mathematical functions with parentheses (word boundary required)
             r'\b[a-zA-Z]\s*[=]\s*[a-zA-Z0-9\^]+\s*[+\-*/]',  # Mathematical equations
             r'[a-zA-Z]\^[0-9]+\s*[+\-]',  # Clear algebraic expressions
             r'\d+/\d+\s*[+\-*/=]',  # Fractions in mathematical context
+            r'[A-Z]\s*\([A-Z]{2,}\s*[\-]\s*[A-Z][a-z]+\)[0-9]',  # Pattern like "L (VGS -Vth)2"
+            r'\d+[μµ][a-z]+[A-Z][a-z]*',  # Pattern like "2µnCox"
         ]
         
         # Strong indicators suggest it's definitely math
@@ -297,6 +323,10 @@ class MathProcessor:
             r'[₀₁₂₃₄₅₆₇₈₉]',    # Unicode subscripts
             r'\^[0-9\-\+]',     # Explicit superscripts
             r'_[0-9\-\+]',      # Explicit subscripts
+            r'\([A-Z]{2,}[\-][A-Z][a-z]+\)',  # Pattern like "(VGS-Vth)"
+            r'^[A-Z]$',        # Single capital letter (likely a variable)
+            r'\d+[μµ]',        # Number with mu (micro)
+            r'[A-Z]/[A-Z]',    # Variable ratios like W/L
         ]
         
         # Count weak indicators

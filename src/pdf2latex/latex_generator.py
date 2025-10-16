@@ -55,6 +55,24 @@ class LaTeXGenerator:
         
         logger.info(f"Initialized LaTeXGenerator with template: {template}")
     
+    def _normalize_unicode_characters(self, text: str) -> str:
+        """
+        Normalize Unicode characters that can cause LaTeX compilation issues.
+        
+        Args:
+            text: Text that may contain problematic Unicode characters
+            
+        Returns:
+            Text with normalized characters
+        """
+        # Replace Unicode minus sign (U+2212) with ASCII hyphen-minus
+        text = text.replace('−', '-')
+        
+        # Replace other problematic Unicode characters if needed
+        # Add more replacements here as needed
+        
+        return text
+    
     def generate(self, document: Dict[str, Any]) -> str:
         """
         Generate LaTeX source code from parsed document.
@@ -207,6 +225,10 @@ class LaTeXGenerator:
             # Process text content
             page_text = page.get('text', '')
             if page_text.strip():
+                # Remove metadata content from the first page to avoid duplication
+                if page_num == 1:
+                    page_text = self._remove_metadata_from_text(page_text, document.get('metadata', {}))
+                
                 formatted_text = self._format_text(page_text)
                 if formatted_text.strip():
                     page_content.append(formatted_text)
@@ -256,44 +278,182 @@ class LaTeXGenerator:
         if not text.strip():
             return ""
         
-        # Process mathematical expressions first (before LaTeX escaping)
-        text = self.math_processor.convert_to_latex(text)
+        # Normalize Unicode characters first
+        text = self._normalize_unicode_characters(text)
         
-        # Then escape LaTeX special characters (but preserve math commands)
-        text = self._escape_latex_preserving_math(text)
-        
-        # Split into paragraphs
+        # Split into paragraphs and process each one
+        # (math processing happens within _process_paragraph_with_equations)
         paragraphs = text.split('\n\n')
         formatted_paragraphs = []
         
         for paragraph in paragraphs:
-            # Clean up whitespace
-            cleaned = re.sub(r'\s+', ' ', paragraph.strip())
-            
-            if cleaned:
-                # Check if this is a mathematical expression line
-                if self.math_processor.is_likely_math_line(cleaned):
-                    # Wrap in appropriate math environment
-                    math_wrapped = self.math_processor.wrap_math_expressions(cleaned)
-                    formatted_paragraphs.append(math_wrapped)
-                elif self._looks_like_heading(cleaned):
-                    # Format as section heading  
-                    heading_text = cleaned.rstrip('.')
-                    formatted_paragraphs.append(f"\\section{{{heading_text}}}")
-                elif self._looks_like_subheading(cleaned):
-                    # Format as subsection heading
-                    heading_text = cleaned.rstrip('.')
-                    formatted_paragraphs.append(f"\\subsection{{{heading_text}}}")
-                else:
-                    # Regular paragraph - only wrap in math if it's actually mathematical
-                    if self.math_processor.is_likely_math_line(cleaned):
-                        # This is primarily mathematical content
-                        formatted_paragraphs.append(f"${cleaned}$" if not cleaned.startswith('$') else cleaned)
-                    else:
-                        # Regular text - don't wrap in math environment
-                        formatted_paragraphs.append(cleaned)
+            formatted_paragraph = self._process_paragraph_with_equations(paragraph)
+            if formatted_paragraph:
+                formatted_paragraphs.append(formatted_paragraph)
         
         return '\n\n'.join(formatted_paragraphs)
+    
+    def _process_paragraph_with_equations(self, paragraph: str) -> str:
+        """
+        Process a paragraph that might contain multi-line equations.
+        
+        Args:
+            paragraph: Raw paragraph text
+            
+        Returns:
+            Formatted paragraph with proper equation environments
+        """
+        if not paragraph.strip():
+            return ""
+        
+        # Split into individual lines
+        lines = [line.strip() for line in paragraph.split('\n') if line.strip()]
+        
+        result_lines = []
+        math_group = []
+        in_equation = False
+        
+        for line in lines:
+            is_math = self.math_processor.is_likely_math_line(line)
+            is_equation_number = re.match(r'^\(\d+\)$', line.strip())  # Pattern like "(1)"
+            
+            if is_math and not is_equation_number:
+                # This is a mathematical line - convert to LaTeX but don't escape
+                math_line = self.math_processor.convert_to_latex(line)
+                math_group.append(math_line)
+                in_equation = True
+            elif is_equation_number and in_equation:
+                # This is equation numbering - add it to the current group
+                math_group.append(line)
+                # End the equation group
+                raw_content = ' '.join(math_group[:-1])  # All but the number
+                equation_content = self._reconstruct_equation(raw_content)
+                equation_number = math_group[-1].strip('()')  # Extract number
+                result_lines.append(f"\\begin{{equation}}")
+                result_lines.append(equation_content)
+                result_lines.append(f"\\label{{eq:{equation_number}}}")
+                result_lines.append(f"\\end{{equation}}")
+                math_group = []
+                in_equation = False
+            else:
+                # Not a math line - finalize any pending math group
+                if math_group:
+                    for line in lines:
+                        is_math = self.math_processor.is_likely_math_line(line)
+                        is_equation_number = re.match(r'^\(\d+\)$', line.strip())  # Pattern like "(1)"
+
+                        if is_math and not is_equation_number:
+                            math_line = self.math_processor.convert_to_latex(line)
+                            math_group.append(math_line)
+                            in_equation = True
+                        elif is_equation_number and in_equation:
+                            math_group.append(line)
+                            raw_content = ' '.join(math_group[:-1])
+                            equation_content = self._reconstruct_equation(raw_content)
+                            equation_number = math_group[-1].strip('()')
+                            if len(math_group) > 2:
+                                # Multi-line: use align environment
+                                align_lines = equation_content.split('\\\\')
+                                align_body = ' \\\n'.join([l.strip() for l in align_lines if l.strip()])
+                                result_lines.append(f"\\begin{{align}}" )
+                                result_lines.append(align_body)
+                                result_lines.append(f"\\label{{eq:{equation_number}}}")
+                                result_lines.append(f"\\end{{align}}" )
+                            else:
+                                # Single line: use equation environment
+                                result_lines.append(f"\\begin{{equation}}" )
+                                result_lines.append(equation_content)
+                                result_lines.append(f"\\label{{eq:{equation_number}}}")
+                                result_lines.append(f"\\end{{equation}}" )
+                            math_group = []
+                            in_equation = False
+                        else:
+                            if math_group:
+                                if len(math_group) == 1:
+                                    result_lines.append(f"\\[{math_group[0]}\\]")
+                                elif len(math_group) > 1:
+                                    raw_content = ' '.join(math_group)
+                                    equation_content = self._reconstruct_equation(raw_content)
+                                    align_lines = equation_content.split('\\\\')
+                                    align_body = ' \\\n'.join([l.strip() for l in align_lines if l.strip()])
+                                    result_lines.append(f"\\begin{{align}}" )
+                                    result_lines.append(align_body)
+                                    result_lines.append(f"\\end{{align}}" )
+                                math_group = []
+                                in_equation = False
+                            if self._looks_like_heading(line):
+                                heading_text = line.rstrip('.')
+                                escaped_heading = self._escape_latex(heading_text)
+                                result_lines.append(f"\\section{{{escaped_heading}}}")
+                            elif self._looks_like_subheading(line):
+                                heading_text = line.rstrip('.')
+                                escaped_heading = self._escape_latex(heading_text)
+                                result_lines.append(f"\\subsection{{{escaped_heading}}}")
+                            else:
+                                escaped_line = self._escape_latex(line)
+                                result_lines.append(escaped_line)
+                    # Handle any remaining math group
+                    if math_group:
+                        if len(math_group) == 1:
+                            result_lines.append(f"\\[{math_group[0]}\\]")
+                        elif len(math_group) > 1:
+                            raw_content = ' '.join(math_group)
+                            equation_content = self._reconstruct_equation(raw_content)
+                            align_lines = equation_content.split('\\\\')
+                            align_body = ' \\\n'.join([l.strip() for l in align_lines if l.strip()])
+                        result_lines.append(f"\\begin{{align}}" )
+                        result_lines.append(align_body)
+                        result_lines.append(f"\\end{{align}}" )
+        
+        return '\n'.join(result_lines) if result_lines else ""
+    
+    def _reconstruct_equation(self, raw_content: str) -> str:
+        """
+        Reconstruct common equation patterns that get split across lines.
+        
+        Args:
+            raw_content: Raw equation content joined from multiple lines
+            
+        Returns:
+            Reconstructed equation with proper mathematical formatting
+        """
+        import re
+        
+        # Pattern 1: Drain current equation - ID = 1 2μnCox W L (VGS-Vth)²
+        # Should become: ID = (1/2)μnCox(W/L)(VGS-Vth)²
+        drain_current_pattern = r'(I_\{D\})\s*=\s*1\s*2(\\mu_\{n\}\s*C_\{Cox\})\s*W\s*L\s*(\(V_\{G_\{S\}\}\s*[\-]\s*V_\{th\}\)\^?\{?2\}?)'
+        
+        if re.search(drain_current_pattern, raw_content):
+            # Reconstruct drain current equation
+            reconstructed = re.sub(
+                drain_current_pattern,
+                r'\1 = \\frac{1}{2}\2 \\frac{W}{L}\3',
+                raw_content
+            )
+            return reconstructed
+        
+        # Pattern 2: General pattern for "= 1 2μ" → "= (1/2)μ"
+        fraction_pattern = r'=\s*1\s*2(\\mu[^}]*\}?[^}]*\}?)'
+        if re.search(fraction_pattern, raw_content):
+            reconstructed = re.sub(
+                fraction_pattern,
+                r'= \\frac{1}{2}\1',
+                raw_content
+            )
+            return reconstructed
+        
+        # Pattern 3: W L pattern → W/L fraction
+        wl_pattern = r'(\\frac\{1\}\{2\}[^}]*\}[^}]*\})\s*W\s*L\s*(\([^)]+\))'
+        if re.search(wl_pattern, raw_content):
+            reconstructed = re.sub(
+                wl_pattern,
+                r'\1 \\frac{W}{L}\2',
+                raw_content
+            )
+            return reconstructed
+        
+        # Return original if no patterns match
+        return raw_content
     
     def _looks_like_heading(self, text: str) -> bool:
         """
@@ -372,6 +532,8 @@ class LaTeXGenerator:
             '{': r'\{',
             '}': r'\}',
             '~': r'\textasciitilde{}',
+            '²': r'\textasciicircum{}2',  # Unicode superscript 2
+            '³': r'\textasciicircum{}3',  # Unicode superscript 3
         }
         
         for char, escaped in latex_special_chars.items():
@@ -478,10 +640,162 @@ class LaTeXGenerator:
         Returns:
             Escaped text with math commands preserved
         """
-        # For now, let's use a simpler approach - just escape the basic text
-        # without the complex placeholder system that's causing issues
-        return self._escape_latex(text)
+        import uuid
+        
+        # Find and temporarily replace math commands with placeholders
+        math_patterns = [
+            r'\\[a-zA-Z]+',  # LaTeX commands like \mu, \frac, etc.
+            r'\{[^}]*\}',    # Braces with content
+            r'\^{[^}]*}',    # Superscripts
+            r'_{[^}]*}',     # Subscripts
+            r'\\frac{[^}]*}{[^}]*}',  # Fractions
+        ]
+        
+        placeholders = {}
+        result = text
+        
+        # Replace math patterns with unique placeholders
+        for pattern in math_patterns:
+            matches = re.finditer(pattern, result)
+            for match in reversed(list(matches)):  # Reverse to maintain indices
+                placeholder = f"__MATH_PLACEHOLDER_{uuid.uuid4().hex[:8]}__"
+                placeholders[placeholder] = match.group()
+                result = result[:match.start()] + placeholder + result[match.end():]
+        
+        # Escape the remaining text
+        result = self._escape_latex(result)
+        
+        # Restore math commands
+        for placeholder, original in placeholders.items():
+            result = result.replace(placeholder, original)
+        
+        return result
     
+    def _remove_metadata_from_text(self, text: str, metadata: Dict[str, Any]) -> str:
+        """
+        Remove metadata content from text to avoid duplication in document body.
+        
+        Args:
+            text: Original page text
+            metadata: Extracted metadata dictionary
+            
+        Returns:
+            Text with metadata portions removed
+        """
+        if not text.strip():
+            return text
+        
+        # Get metadata values to look for
+        title = (metadata.get('title') or '').strip()
+        author = (metadata.get('author') or '').strip()
+        date = (metadata.get('date') or '').strip()
+        
+        # Handle single-line format specially
+        if '\n' not in text.strip():
+            return self._filter_single_line_metadata(text, title, author, date)
+        
+        # Handle multi-line format
+        lines = text.split('\n')
+        filtered_lines = []
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Skip empty lines at the beginning (they'll be added back if needed)
+            if not line_stripped:
+                # Only add empty lines if we already have content
+                if filtered_lines:
+                    filtered_lines.append(line)
+                continue
+            
+            # Skip lines that match extracted metadata
+            skip_line = False
+            
+            # Check if line matches title
+            if title and (line_stripped == title or line_stripped.startswith(title)):
+                skip_line = True
+            
+            # Check if line matches author
+            elif author and (line_stripped == author or author in line_stripped):
+                # Be more careful with author matching - check if it's a standalone line
+                if len(line_stripped) < 100 and author in line_stripped:
+                    skip_line = True
+            
+            # Check if line matches date patterns
+            elif date and date in line_stripped:
+                skip_line = True
+            
+            # Also skip lines that are just the author and date combined
+            elif author and date and author in line_stripped and date in line_stripped:
+                skip_line = True
+            
+            if not skip_line:
+                filtered_lines.append(line)
+        
+        # Clean up multiple consecutive empty lines
+        result_lines = []
+        prev_empty = False
+        
+        for line in filtered_lines:
+            is_empty = not line.strip()
+            if not (is_empty and prev_empty):  # Don't add consecutive empty lines
+                result_lines.append(line)
+            prev_empty = is_empty
+        
+        # Remove leading and trailing empty lines
+        while result_lines and not result_lines[0].strip():
+            result_lines.pop(0)
+        while result_lines and not result_lines[-1].strip():
+            result_lines.pop()
+        
+        return '\n'.join(result_lines)
+
+    def _filter_single_line_metadata(self, text: str, title: str, author: str, date: str) -> str:
+        """
+        Filter metadata from single-line text format.
+        
+        Args:
+            text: Single line of text
+            title: Extracted title
+            author: Extracted author  
+            date: Extracted date
+            
+        Returns:
+            Text with metadata portions removed
+        """
+        result = text.strip()
+        
+        # Remove metadata components in order from start of line
+        if title and result.startswith(title):
+            result = result[len(title):].strip()
+        
+        if author and result.startswith(author):
+            result = result[len(author):].strip()
+        
+        # Remove date patterns
+        if date:
+            # Try exact match first
+            if date in result:
+                result = result.replace(date, '', 1).strip()
+            else:
+                # Try removing date components
+                # Remove common date patterns
+                date_patterns = [
+                    r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b',
+                    r'\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b',
+                    r'\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b',
+                    r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b',
+                ]
+                
+                for pattern in date_patterns:
+                    result = re.sub(pattern, '', result, flags=re.IGNORECASE).strip()
+        
+        # Clean up extra whitespace and common separators
+        result = re.sub(r'\s+', ' ', result)
+        result = re.sub(r'^[,\-\s]+|[,\-\s]+$', '', result)
+        
+        return result.strip()
+
     def _generate_image_inclusion(self, image_info: Dict[str, Any], page_num: int) -> str:
         """
         Generate LaTeX code for including an image.
