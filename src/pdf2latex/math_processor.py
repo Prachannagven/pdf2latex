@@ -41,22 +41,13 @@ class MathProcessor:
             
             'subscript': {
                 'patterns': [
-                    r'([a-zA-Z])_([a-zA-Z0-9\-\+]+)',  # x_i, H_2O
+                    r'([a-zA-Z])_([a-zA-Z0-9\-\+]+)',  # x_i, H_2O - explicit underscores only
                     r'([a-zA-Z])([₀₁₂₃₄₅₆₇₈₉₊₋]+)',  # Unicode subscripts
-                    r'\b([A-Z])([A-Z]{2,})\b',  # Common variables: VGS → V_{GS}, VTH → V_{TH}
-                    r'\b([A-Z])([a-z]+)\b',  # Variables like Vth → V_{th}
-                    r'\b([A-Z])([a-z]*[A-Z][a-z]*)\b',  # Variables like Cox → C_{ox}
-                    r'\b(ID)\b',  # Specific case: ID → I_D
-                    r'µ([a-z])([A-Z][a-z]*)',  # Pattern like µnCox → \mu_n C_{ox}
+                    # Removed overly aggressive patterns that match normal words
                 ],
                 'replacements': [
                     r'\1_{\2}',
                     lambda m: f'{m.group(1)}_{{{self._convert_unicode_subscript(m.group(2))}}}',
-                    r'\1_{\2}',
-                    r'\1_{\2}',  
-                    r'\1_{\2}',
-                    r'I_D',
-                    r'\\mu_{\1} C_{\2}'
                 ]
             },
             
@@ -279,35 +270,43 @@ class MathProcessor:
         Returns:
             True if the line likely contains mathematical expressions
         """
-        # First, exclude obvious non-mathematical contexts
+        # Be VERY conservative - only detect actual math, not normal text
         text_lower = text.lower()
+        text_stripped = text.strip()
         
-        # Exclude percentage contexts (like "85% response rate")
-        if re.search(r'\d+\s*%\s+(?:response|increase|decrease|rate|growth|change)', text_lower):
+        # Exclude if it looks like normal prose
+        # If it has many common English words, it's probably not a math line
+        common_words = ['the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'with', 'is', 'are', 'was', 'were',
+                       'find', 'determine', 'calculate', 'draw', 'assume', 'given', 'take', 'consider',
+                       'exam', 'comprehensive', 'semester', 'first', 'second', 'open', 'book', 'marks']
+        word_count = 0
+        for word in common_words:
+            if re.search(rf'\b{word}\b', text_lower):
+                word_count += 1
+                if word_count >= 2:  # If it has 2+ common words, it's prose
+                    return False
+        
+        # If the line is very long (>80 chars) and looks like a sentence, it's not math
+        if len(text_stripped) > 80 and re.search(r'[a-z]+\s+[a-z]+\s+[a-z]+', text_lower):
             return False
         
-        # Exclude statistical significance contexts (like "p < 0.05")
-        if re.search(r'p\s*[<>]\s*0\.0\d+', text_lower):
+        # Exclude obvious non-mathematical contexts
+        if re.search(r'(?:section|chapter|version|figure|table|page|marks|semester|exam)\s', text_lower):
             return False
         
-        # Exclude time complexity contexts (like "O(n²)")
-        if re.search(r'o\s*\([^)]*\)\s*time', text_lower):
-            return False
-        
-        # Exclude version numbers and references (like "section 3.4", "version 2.1")
-        if re.search(r'(?:section|chapter|version|figure|table|page)\s+\d+\.?\d*', text_lower):
-            return False
-        
-        # Now check for mathematical indicators with better context
+        # Now check for STRONG mathematical indicators only
         strong_math_indicators = [
-            r'[∑∏∫∂∇∆]',        # Strong mathematical symbols
+            r'[∑∏∫∂∇]',        # Strong mathematical symbols (removed ∆ as it appears in text)
             r'√\([^)]+\)',       # Square root with parentheses
-            r'\b(sin|cos|tan|log|ln|exp)\s*\(',  # Mathematical functions with parentheses (word boundary required)
-            r'\b[a-zA-Z]\s*[=]\s*[a-zA-Z0-9\^]+\s*[+\-*/]',  # Mathematical equations
-            r'[a-zA-Z]\^[0-9]+\s*[+\-]',  # Clear algebraic expressions
-            r'\d+/\d+\s*[+\-*/=]',  # Fractions in mathematical context
-            r'[A-Z]\s*\([A-Z]{2,}\s*[\-]\s*[A-Z][a-z]+\)[0-9]',  # Pattern like "L (VGS -Vth)2"
-            r'\d+[μµ][a-z]+[A-Z][a-z]*',  # Pattern like "2µnCox"
+            r'\b(sin|cos|tan|log|ln|exp|sinc)\s*\(',  # Mathematical functions with parentheses
+            r'\\(frac|sqrt|int|sum|prod)',  # LaTeX math commands
+            r'[a-z]\s*=\s*[0-9]+\s*[+\-\*/]',  # Simple equations like x = 2 + 3
+            r'[a-zA-Z]\(t\)\s*=',  # Functions of time like m(t) =
+            r'^\s*\([a-z]\)\s',  # Question numbers like "(a)" at start
+            r'\d+\s*[×÷±∓]\s*\d+',  # Arithmetic with special operators
+            r'[≤≥≠≈∞]',  # Mathematical comparison operators
+            r'\^\s*\{[^}]+\}',  # Explicit superscript in LaTeX format
+            r'_\s*\{[^}]+\}',  # Explicit subscript in LaTeX format
         ]
         
         # Strong indicators suggest it's definitely math
@@ -315,32 +314,15 @@ class MathProcessor:
             if re.search(indicator, text):
                 return True
         
-        # Weaker indicators need more context
-        weak_math_indicators = [
-            r'[=<>≤≥≠≈]',      # Mathematical operators (but common in text)
-            r'[α-ωΑ-Ω]',       # Greek letters (but used in regular text too)
-            r'[²³⁰¹⁴⁵⁶⁷⁸⁹]',  # Unicode superscripts
-            r'[₀₁₂₃₄₅₆₇₈₉]',    # Unicode subscripts
-            r'\^[0-9\-\+]',     # Explicit superscripts
-            r'_[0-9\-\+]',      # Explicit subscripts
-            r'\([A-Z]{2,}[\-][A-Z][a-z]+\)',  # Pattern like "(VGS-Vth)"
-            r'^[A-Z]$',        # Single capital letter (likely a variable)
-            r'\d+[μµ]',        # Number with mu (micro)
-            r'[A-Z]/[A-Z]',    # Variable ratios like W/L
-        ]
+        # Check for explicit math: equations with = and mathematical operators
+        # But only if it looks like an actual equation, not a comparison in text
+        if re.search(r'\b[a-zA-Z][a-zA-Z0-9]*\s*=\s*[^,]+[+\-\*/\^]', text):
+            # Make sure it's not just text with = in it
+            if not re.search(r'\b(equal|equals|set)\b', text_lower):
+                return True
         
-        # Count weak indicators
-        weak_matches = 0
-        for indicator in weak_math_indicators:
-            if re.search(indicator, text):
-                weak_matches += 1
-        
-        # Multiple weak indicators or specific contexts suggest math
-        if weak_matches >= 2:
-            return True
-        
-        # Single weak indicator in short text (likely standalone equation)
-        if weak_matches >= 1 and len(text.strip()) < 30 and not any(word in text_lower for word in ['the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'with']):
+        # Very short lines with just symbols might be math
+        if len(text_stripped) < 20 and re.search(r'[=+\-\*/\^]', text) and not re.search(r'[a-z]{4,}', text_lower):
             return True
         
         return False

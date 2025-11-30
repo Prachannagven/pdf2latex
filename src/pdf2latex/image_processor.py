@@ -33,7 +33,7 @@ class ImageProcessor:
         logger.info(f"Initialized ImageProcessor with output directory: {self.output_dir}")
     
     def extract_images_from_page(self, page: fitz.Page, page_num: int, 
-                                doc_hash: str) -> List[Dict]:
+                                doc_hash: str, extracted_hashes: Optional[set] = None) -> List[Dict]:
         """
         Extract all images from a PDF page.
         
@@ -41,19 +41,30 @@ class ImageProcessor:
             page: PyMuPDF page object
             page_num: Page number (1-based)
             doc_hash: Unique hash for the document
+            extracted_hashes: Set of already extracted image hashes (for deduplication)
             
         Returns:
             List of image information dictionaries
         """
+        if extracted_hashes is None:
+            extracted_hashes = set()
+        
         images = []
+        unique_images = {}  # Map xref to image info to deduplicate within page
         image_list = page.get_images()
         
-        logger.debug(f"Found {len(image_list)} images on page {page_num}")
+        logger.debug(f"Found {len(image_list)} image references on page {page_num}")
         
         for img_index, img in enumerate(image_list):
             try:
                 # Extract image data
                 xref = img[0]
+                
+                # Check if we've already processed this xref on this page
+                if xref in unique_images:
+                    logger.debug(f"Skipping duplicate xref {xref} on page {page_num}")
+                    continue
+                
                 pix = fitz.Pixmap(page.parent, xref)
                 
                 # Skip images with unsupported color spaces
@@ -66,8 +77,19 @@ class ImageProcessor:
                 if pix.alpha:
                     pix = fitz.Pixmap(fitz.csRGB, pix)
                 
-                # Generate unique filename
+                # Generate unique hash based on image content
                 image_hash = hashlib.md5(pix.tobytes()).hexdigest()[:8]
+                
+                # Check if we've already extracted this exact image
+                if image_hash in extracted_hashes:
+                    logger.debug(f"Skipping duplicate image {image_hash} on page {page_num}")
+                    pix = None
+                    continue
+                
+                # Add to extracted set
+                extracted_hashes.add(image_hash)
+                
+                # Generate unique filename
                 filename = f"{doc_hash}_p{page_num}_{img_index}_{image_hash}.png"
                 image_path = self.output_dir / filename
                 
@@ -98,13 +120,17 @@ class ImageProcessor:
                     logger.warning(f"Failed to optimize image {filename}: {e}")
                 
                 images.append(image_info)
-                logger.debug(f"Extracted image: {filename} ({pix.width}x{pix.height})")
+                unique_images[xref] = image_info
+                logger.debug(f"Extracted unique image: {filename} ({pix.width}x{pix.height})")
                 
                 pix = None  # Free memory
                 
             except Exception as e:
                 logger.error(f"Failed to extract image {img_index} from page {page_num}: {e}")
                 continue
+        
+        if len(image_list) > len(images):
+            logger.info(f"Deduplicated {len(image_list) - len(images)} duplicate images on page {page_num}")
         
         return images
     
@@ -306,22 +332,23 @@ class ImageProcessor:
         doc_hash = self.get_document_hash(pdf_path)
         
         all_images = {}
+        extracted_hashes = set()  # Track extracted image hashes across all pages
         
         try:
             doc = fitz.open(pdf_path)
             
             for page_num in range(len(doc)):
                 page = doc[page_num]
-                page_images = self.extract_images_from_page(page, page_num + 1, doc_hash)
+                page_images = self.extract_images_from_page(page, page_num + 1, doc_hash, extracted_hashes)
                 
                 if page_images:
                     all_images[page_num + 1] = page_images
-                    logger.info(f"Extracted {len(page_images)} images from page {page_num + 1}")
+                    logger.info(f"Extracted {len(page_images)} unique images from page {page_num + 1}")
             
             doc.close()
             
             total_images = sum(len(images) for images in all_images.values())
-            logger.info(f"Successfully extracted {total_images} images from {len(all_images)} pages")
+            logger.info(f"Successfully extracted {total_images} unique images from {len(all_images)} pages")
             
         except Exception as e:
             logger.error(f"Failed to extract images from {pdf_path}: {e}")

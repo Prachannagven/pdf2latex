@@ -281,6 +281,9 @@ class LaTeXGenerator:
         # Normalize Unicode characters first
         text = self._normalize_unicode_characters(text)
         
+        # Clean up problematic line breaks and excessive spaces
+        text = self._clean_text_formatting(text)
+        
         # Split into paragraphs and process each one
         # (math processing happens within _process_paragraph_with_equations)
         paragraphs = text.split('\n\n')
@@ -292,6 +295,50 @@ class LaTeXGenerator:
                 formatted_paragraphs.append(formatted_paragraph)
         
         return '\n\n'.join(formatted_paragraphs)
+    
+    def _clean_text_formatting(self, text: str) -> str:
+        """
+        Clean up text formatting issues from PDF extraction.
+        
+        Args:
+            text: Raw text from PDF
+            
+        Returns:
+            Cleaned text with better line breaks and spacing
+        """
+        # Remove excessive trailing spaces before line breaks
+        text = re.sub(r'[ \t]+\n', '\n', text)
+        
+        # Fix lines that break mid-word or mid-sentence without hyphenation
+        # Join lines that end without punctuation and continue with lowercase
+        lines = text.split('\n')
+        cleaned_lines = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].rstrip()
+            
+            # Check if this line should be joined with the next
+            if i + 1 < len(lines) and line and not line.endswith(('.', '?', '!', ':', ';', ',', ')', ']')):
+                next_line = lines[i + 1].lstrip()
+                # Only join if the next line starts with lowercase or continues a word
+                if next_line and (next_line[0].islower() or not line[-1].isspace()):
+                    # Check if there's excessive spacing indicating columnar layout
+                    if '                  ' not in line and '                  ' not in lines[i + 1]:
+                        # Join the lines with a space
+                        cleaned_lines.append(line + ' ' + next_line)
+                        i += 2
+                        continue
+            
+            cleaned_lines.append(line)
+            i += 1
+        
+        text = '\n'.join(cleaned_lines)
+        
+        # Remove excessive spaces in the middle of lines (but preserve indentation)
+        text = re.sub(r'([^\s])  +([^\s])', r'\1 \2', text)
+        
+        return text
     
     def _process_paragraph_with_equations(self, paragraph: str) -> str:
         """
@@ -338,72 +385,40 @@ class LaTeXGenerator:
             else:
                 # Not a math line - finalize any pending math group
                 if math_group:
-                    for line in lines:
-                        is_math = self.math_processor.is_likely_math_line(line)
-                        is_equation_number = re.match(r'^\(\d+\)$', line.strip())  # Pattern like "(1)"
-
-                        if is_math and not is_equation_number:
-                            math_line = self.math_processor.convert_to_latex(line)
-                            math_group.append(math_line)
-                            in_equation = True
-                        elif is_equation_number and in_equation:
-                            math_group.append(line)
-                            raw_content = ' '.join(math_group[:-1])
-                            equation_content = self._reconstruct_equation(raw_content)
-                            equation_number = math_group[-1].strip('()')
-                            if len(math_group) > 2:
-                                # Multi-line: use align environment
-                                align_lines = equation_content.split('\\\\')
-                                align_body = ' \\\n'.join([l.strip() for l in align_lines if l.strip()])
-                                result_lines.append(f"\\begin{{align}}" )
-                                result_lines.append(align_body)
-                                result_lines.append(f"\\label{{eq:{equation_number}}}")
-                                result_lines.append(f"\\end{{align}}" )
-                            else:
-                                # Single line: use equation environment
-                                result_lines.append(f"\\begin{{equation}}" )
-                                result_lines.append(equation_content)
-                                result_lines.append(f"\\label{{eq:{equation_number}}}")
-                                result_lines.append(f"\\end{{equation}}" )
-                            math_group = []
-                            in_equation = False
-                        else:
-                            if math_group:
-                                if len(math_group) == 1:
-                                    result_lines.append(f"\\[{math_group[0]}\\]")
-                                elif len(math_group) > 1:
-                                    raw_content = ' '.join(math_group)
-                                    equation_content = self._reconstruct_equation(raw_content)
-                                    align_lines = equation_content.split('\\\\')
-                                    align_body = ' \\\n'.join([l.strip() for l in align_lines if l.strip()])
-                                    result_lines.append(f"\\begin{{align}}" )
-                                    result_lines.append(align_body)
-                                    result_lines.append(f"\\end{{align}}" )
-                                math_group = []
-                                in_equation = False
-                            if self._looks_like_heading(line):
-                                heading_text = line.rstrip('.')
-                                escaped_heading = self._escape_latex(heading_text)
-                                result_lines.append(f"\\section{{{escaped_heading}}}")
-                            elif self._looks_like_subheading(line):
-                                heading_text = line.rstrip('.')
-                                escaped_heading = self._escape_latex(heading_text)
-                                result_lines.append(f"\\subsection{{{escaped_heading}}}")
-                            else:
-                                escaped_line = self._escape_latex(line)
-                                result_lines.append(escaped_line)
-                    # Handle any remaining math group
-                    if math_group:
-                        if len(math_group) == 1:
-                            result_lines.append(f"\\[{math_group[0]}\\]")
-                        elif len(math_group) > 1:
-                            raw_content = ' '.join(math_group)
-                            equation_content = self._reconstruct_equation(raw_content)
-                            align_lines = equation_content.split('\\\\')
-                            align_body = ' \\\n'.join([l.strip() for l in align_lines if l.strip()])
-                        result_lines.append(f"\\begin{{align}}" )
-                        result_lines.append(align_body)
-                        result_lines.append(f"\\end{{align}}" )
+                    if len(math_group) == 1:
+                        result_lines.append(f"\\[{math_group[0]}\\]")
+                    elif len(math_group) > 1:
+                        raw_content = ' '.join(math_group)
+                        equation_content = self._reconstruct_equation(raw_content)
+                        result_lines.append(f"\\begin{{align}}")
+                        result_lines.append(equation_content)
+                        result_lines.append(f"\\end{{align}}")
+                    math_group = []
+                    in_equation = False
+                
+                # Process the current non-math line
+                if self._looks_like_heading(line):
+                    heading_text = line.rstrip('.')
+                    escaped_heading = self._escape_latex(heading_text)
+                    result_lines.append(f"\\section{{{escaped_heading}}}")
+                elif self._looks_like_subheading(line):
+                    heading_text = line.rstrip('.')
+                    escaped_heading = self._escape_latex(heading_text)
+                    result_lines.append(f"\\subsection{{{escaped_heading}}}")
+                else:
+                    escaped_line = self._escape_latex(line)
+                    result_lines.append(escaped_line)
+        
+        # Handle any remaining math group at the end
+        if math_group:
+            if len(math_group) == 1:
+                result_lines.append(f"\\[{math_group[0]}\\]")
+            elif len(math_group) > 1:
+                raw_content = ' '.join(math_group)
+                equation_content = self._reconstruct_equation(raw_content)
+                result_lines.append(f"\\begin{{align}}")
+                result_lines.append(equation_content)
+                result_lines.append(f"\\end{{align}}")
         
         return '\n'.join(result_lines) if result_lines else ""
     
@@ -465,25 +480,25 @@ class LaTeXGenerator:
         Returns:
             True if text looks like a heading
         """
-        # Basic heuristics:
-        # - Short text (< 100 characters)
-        # - No punctuation at the end or ends with period
-        # - Might be all caps or title case
-        # - Doesn't contain common paragraph words
+        # Be conservative - only mark obvious headings
         
-        if len(text) > 100:
+        if len(text) > 100 or len(text) < 3:
             return False
         
-        # Check if it's all uppercase (common for headings)
-        if text.isupper() and len(text.split()) <= 8:
+        # Single letters or very short text are not headings
+        if len(text.strip()) <= 2:
+            return False
+        
+        # Check if it's all uppercase (common for headings) and has multiple words
+        if text.isupper() and len(text.split()) >= 2 and len(text.split()) <= 8:
             return True
         
-        # Check if it's title case and short
-        if text.istitle() and len(text.split()) <= 6:
+        # Check if it's title case, short, and substantive
+        if text.istitle() and len(text.split()) >= 3 and len(text.split()) <= 6:
             return True
         
-        # Check for numbered sections
-        if re.match(r'^\d+\.?\s+[A-Z]', text):
+        # Check for numbered sections (like "1. Introduction" or "1.1 Background")
+        if re.match(r'^\d+(\.\d+)*\.?\s+[A-Z][a-z]', text):
             return True
         
         return False

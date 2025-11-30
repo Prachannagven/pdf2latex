@@ -110,11 +110,15 @@ class PDFParser:
         for page_num in range(len(doc)):
             page = doc[page_num]
             
-            # Extract text
-            text = page.get_text()
+            # Extract text with better layout preservation
+            # Using "blocks" mode provides better structure
+            text = page.get_text("text", sort=True)  # sort=True for better reading order
             
             # Extract text with formatting information
             text_dict = page.get_text("dict")
+            
+            # Also extract blocks for better structure understanding
+            blocks = page.get_text("blocks", sort=True)
             
             # Extract images
             images = []
@@ -137,6 +141,7 @@ class PDFParser:
                 'page_number': page_num + 1,
                 'text': text,
                 'text_dict': text_dict,
+                'blocks': blocks,
                 'images': images,
                 'bbox': page.rect,
                 'rotation': page.rotation
